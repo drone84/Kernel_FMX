@@ -124,10 +124,11 @@ FAT32_COMPUT_PHISICAL_CLUSTER_NEXT
 ; Test if the content of FAT32_FAT_Next_Entry is a usable sector or not
 ;
 ; return value :
-;  0  =>  sector contain valid data
+;  1  =>  sector contain valid data
 ; -1  =>  end of the file, no more sector
 ; -2  =>  bad sector
 ; -3  =>  reserved sector
+; -4  =>  empty sector
 ;-------------------------------------------------------------------------------
 FAT32_Test_Fat_Entry_Validity_Next
                   ;PLA
@@ -177,7 +178,7 @@ FAT32_Test_Fat_Entry_Validity_Next
 ; Test if the content of FAT32_FAT_Entry is a usable sector or not
 ;
 ; return value :
-;  0  =>  sector contain valid data
+;  1  =>  sector contain valid data
 ; -1  =>  end of the file, no more sector
 ; -2  =>  bad sector
 ; -3  =>  reserved sector
@@ -256,9 +257,52 @@ FAT32_Test_Fat_Entry_Validity
  PLX
  .endc
                   RTL
-;--------------------------------------------------------------------------------
+
+;-------------------------------------------------------------------------------
+; In
+; FAT32_FAT_Entry : index where to start looking for a free fat entry
+; Out
+; A : 1 find an empty sector
+; FAT32_FAT_Next_Entry => fat entry where the free cluster is
+;-------------------------------------------------------------------------------
+FAT32_FIND_FREE_FAT_ENTRY
+                  JSL FAT32_IFAT_GET_FAT_ENTRY
+                  LDA FAT32_FAT_Next_Entry
+                  CMP #0
+                  BNE FAT32_FIND_FREE_FAT_ENTRY__FAT_ENTRY_NOT_NULL
+                  LDA FAT32_FAT_Next_Entry +2
+                  AND #$0FFF
+                  CMP #0
+                  BNE FAT32_FIND_FREE_FAT_ENTRY__FAT_ENTRY_NOT_NULL
+                  LDA #1
+                  BRA  FAT32_FIND_FREE_FAT_ENTRY__FOUND
+ FAT32_FIND_FREE_FAT_ENTRY__FAT_ENTRY_NOT_NULL:
+                  ; increment the Fat entry index by 1
+                  LDA FAT32_FAT_Entry
+                  STA ADDER_A
+                  LDA FAT32_FAT_Entry +2
+                  STA ADDER_A +2
+                  LDA #1 ; load -1 in comp 2
+                  STA ADDER_B
+                  LDA #$0
+                  STA ADDER_B +2
+                  LDA ADDER_R
+                  STA FAT32_FAT_Entry
+                  LDA ADDER_R +2
+                  STA FAT32_FAT_Entry +2
+                  ; Test if the index is not too big
+                  CMP #$0FFF
+                  BNE FAT32_FIND_FREE_FAT_ENTRY
+                  LDA FAT32_FAT_Entry
+                  CMP #$FFEF ; last usable cluster is 0x0FFFFFEF
+                  BNE FAT32_FIND_FREE_FAT_ENTRY
+                  LDA #0
+ FAT32_FIND_FREE_FAT_ENTRY__FOUND:
+                  RTL
+
+;-------------------------------------------------------------------------------
 ;- Copy the data from the FAT32 buffer at address FAT32_Data_Destination_buffer
-;--------------------------------------------------------------------------------
+;-------------------------------------------------------------------------------
 FAT32_Data_Destination_buffer .dword 0
 
 FAT32_Copy_Cluster_at_Address

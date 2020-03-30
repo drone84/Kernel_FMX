@@ -41,10 +41,13 @@ FAT32_FAT_Entry_PhisicalL_Address_Next .dword 0   ; Contain the phisical (from t
 FAT32_Data_Base_Sector          .dword 0  ; contain the sector index of the first data in the FAT volume (that include the reserved cluster after the fat) => used to convert from cluster count to fat index
 FAT_Partition_address           .dword 0 ; ofset of the curent FAT volume used
 
-FAT32_Curent_Folder_start_cluster   .dword 0 ; Hold the first cluster of a folder liste from the FAT perspective => real cluster  = FAT32_Curent_Folder_start_cluster + FAT32_Data_Base_Sector
-FAT32_Curent_Folder_curent_cluster .dword 0
-FAT32_Curent_File_Cluster   .dword 0 ; Hold the first cluster from the FAT perspective => real cluster  = FAT32_Curent_File_Cluster + FAT32_Data_Base_Sector
-FAT32_Start_Of_The_file_Cluster .dword 0
+FAT32_Curent_Folder_start_cluster   .dword 0  ; Hold the first cluster of a folder liste from the FAT perspective => real cluster  = FAT32_Curent_Folder_start_cluster + FAT32_Data_Base_Sector
+FAT32_Curent_Folder_curent_cluster  .dword 0
+FAT32_Folder_Entry_Ofset            .word  0  ; Hold the ofset in the directory where the folder entry is, it's used when updating the file info like size, name, or attribut, work with "FAT32_Curent_Folder_start_cluster"
+FAT32_File_Entry_Ofset              .word  0  ; Hold the ofset in the directory where the file entry is, it's used when updating the file info like size, name, or attribut, work with "FAT32_Curent_Folder_start_cluster"
+FAT32_Start_Of_The_file_Cluster     .dword 0  ; Hold the first file cluster from the FAT perspective => real cluster  = FAT32_Start_Of_The_file_Cluster + FAT32_Data_Base_Sector
+FAT32_Curent_File_Cluster           .dword 0
+FAT32_File_Size                     .dword 0
 
 FAT32_Temp_32_bite              .dword 0
 
@@ -103,9 +106,19 @@ FAT32_init  ; init
 ;
 ;
 ;-------------------------------------------------------------------------------
+FAT32_FAT_Entry_Save                 .dword 0
+FAT32_Data_Source_buffer             .dword 0
+FAT32_Data_Size                      .dword $800
+FAT32_Data_cursor                    .dword $0
 
 FAT32_Open_Creat_Write_File
-
+              LDA #0
+              STA FAT32_Data_cursor
+              STA FAT32_Data_cursor +2
+              LDA #<>Starwars_text
+              STA FAT32_Data_Source_buffer
+              LDA #`Starwars_text
+              STA FAT32_Data_Source_buffer +2
               LDX #0
               setxl
               setas
@@ -155,20 +168,20 @@ FAT32_Open_Creat_Write_File
               LDA #0
               JSL FAT32_Open_Folder
               JSL FAT32_DIR_CMD
-              ;-------------------------
-              ; point to the root directory
+  ;----------------------------------------------------------------------------------------------------
+  ;----------------------------------------------------------------------------------------------------
+  ;----------------------------------------------------------------------------------------------------
+              ; point to the root directory first
               JSL IFAT32_GET_ROOT_DIRECTORY_ENTRY
-              JSL FAT32_DIR_CMD
-              ;-------------------------
-              ; Try to open the file to write
+              JSL FAT32_DIR_CMD ; debug only
               JSL FAT32_Open_File
               CMP #1
-              ;BEQ FAT32_Open_Creat_Write_File__File_Opened_with_success
+              BNE FAT32_Open_Creat_Write_File__search_for_free_entry
+              BRL FAT32_Open_Creat_Write_File__File_Opened_with_success
               ;-------------------------
               ; The file to write is not created yet so lets find a free folder
               ; entry to create the file
-              ;JSL IFAT32_GET_ROOT_DIRECTORY_ENTRY
-              ;JSL FAT32_Print_FAT_STATE
+ FAT32_Open_Creat_Write_File__search_for_free_entry:
               JSL FAT32_Find_Free_Folder_Entry
         PHA
         XBA
@@ -178,17 +191,204 @@ FAT32_Open_Creat_Write_File
         LDA #$0D
         JSL IPUTC
         PLA
-              CMP #0
+              CMP #-1 ; we hit the last cluster whitout finding any free dolder entry
               BEQ FAT32_Open_Creat_Write_File__No_Free_folder_entry
-              JSL FAT32_Write_File_Directory_entry
- FAT32_Open_Creat_Write_File__No_Free_folder_entry:
-              ; need to alocate a new sector  to the curent folder FAT list
- FAT32_Open_Creat_Write_File__File_Opened_with_success:
+              CMP #-4
+              BEQ FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster_temp
+              CMP #0
+              BNE FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster_temp
 
-              fdffggd BRA fdffggd
+              JSL FAT32_Write_Empty_File_Entry
               JSL FAT32_Open_File
               CMP #1
+              BNE FAT32_Open_Creat_Write_File__Cant_Open_File_temp
+              BEQ FAT32_Open_Creat_Write_File__File_Opened_with_success
+ FAT32_Open_Creat_Write_File__Cant_Open_File_temp: BRL FAT32_Open_Creat_Write_File__Cant_Open_File
+ FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster_temp: BRL FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster
 
+ FAT32_Open_Creat_Write_File__No_Free_folder_entry:
+              ; need to alocate a new sector to the curent folder FAT list
+              ; the function is using, "FAT32_FAT_Entry" should contain the
+              ; addrerss of the last cluster in the link thanks to "FAT32_Open_File"
+              LDA FAT32_FAT_Entry
+              STA FAT32_FAT_Entry_Save
+              LDA FAT32_FAT_Entry +2
+              STA FAT32_FAT_Entry_Save +2
+              JSL FAT32_FIND_FREE_FAT_ENTRY
+              CMP #1
+              BNE FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster_temp
+              ;-------------------------
+              ; update the nex dat entrey alocated
+              LDA FAT32_FAT_Next_Entry
+              AND #$F000
+              ORA #$0FFF ; last cluster
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE
+              LDA #$0FF8 ; last cluster
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE +2
+              JSL FAT32_UPDATE_FAT_ENTRY ; set the new alocated FAT entry as the last entry in the list
+              ;-------------------------
+              ; link the new alocated fat to the old last fat entry
+              LDA FAT32_FAT_Entry
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE
+              LDA FAT32_FAT_Entry +2
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE +2
+              LDA FAT32_FAT_Entry_Save
+              STA FAT32_FAT_Entry
+              LDA FAT32_FAT_Entry_Save +2
+              STA FAT32_FAT_Entry +2
+              JSL FAT32_UPDATE_FAT_ENTRY ; point the previous FAT entry to the now allocated FAT entry
+              ;-------------------------
+              ; Clear the new created cluster
+              setas
+              LDA #$5A
+ LOOP_CLEAR_BUFFER:
+              TXA
+              STA @l FAT32_DATA_ADDRESS_BUFFER_512,x ; load the byte nb 3 (bank byte)
+              INX
+              CPX #$200
+              BNE LOOP_CLEAR_BUFFER
+              setaxl
+              ; write the cleared cluster
+              LDA FAT32_FAT_Next_Entry +2
+              TAX
+              LDA FAT32_FAT_Next_Entry
+              JSL IFAT_WRITE_SECTOR
+              BRL FAT32_Open_Creat_Write_File__search_for_free_entry
+
+ FAT32_Open_Creat_Write_File__File_Opened_with_success: ; test if the file is empty or not
+              LDA FAT32_Start_Of_The_file_Cluster
+              CMP #0
+              BNE FAT32_Open_Creat_Write_File__File_not_empty
+              LDA FAT32_Start_Of_The_file_Cluster +2
+              CMP #0
+              BNE FAT32_Open_Creat_Write_File__File_not_empty
+              BRA FAT32_Open_Creat_Write_File__File_empty
+ FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster_Temp_2: BRL FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster
+ FAT32_Open_Creat_Write_File__File_not_empty:
+              JSL IFAT32_Erase_File
+ FAT32_Open_Creat_Write_File__File_empty:
+              ;-----------------------------------------------------------------
+              ; Now we need to write data, as the file is empty we need frirst
+              ; to alocate a new cluster to the file and update the file entrt
+              ; for the size and first cluster FAT address
+              ;-----------------------------------------------------------------
+              ; the file is empty so lets find a free FAT entry
+              LDA #3 ; skip the root directyory and reserved sector
+              STA FAT32_FAT_Entry
+              LDA #0
+              STA FAT32_FAT_Entry +2
+              JSL FAT32_FIND_FREE_FAT_ENTRY
+              CMP #1
+              BNE FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster_Temp_2
+              ;-----------------------------------------------------------------
+              ; add the first sector to the newly created file
+              ;-----------------------------------------------------------------
+              ;save the free cluster found by FAT32_FIND_FREE_FAT_ENTRY
+              LDA FAT32_FAT_Next_Entry
+              STA FAT32_FAT_Entry_Save
+              LDA FAT32_FAT_Next_Entry +2
+              STA FAT32_FAT_Entry_Save +2
+              ;set the new sector as the last sector
+              LDA #$FFF8
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE
+              LDA #$FFFF
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE +2
+              JSL FAT32_UPDATE_FAT_ENTRY
+              ; Read the File entry
+              LDA FAT32_File_Entry_Ofset
+              JSL IFAT32_GET_DIRECTORY_ENTRY
+              ; write the newly alocated cluster in the file entry
+              LDA FAT32_FAT_Entry_Save
+              STA FAT32_Curent_Directory_entry_value + 26 ;$1A; Low two bytes of first cluster
+              LDA FAT32_FAT_Entry_Save +2
+              STA FAT32_Curent_Directory_entry_value + 20 ;$14 ; High two bytes of first cluster
+              ; Set the sile size to 512 Byte
+              LDA #0
+              STA FAT32_Curent_Directory_entry_value + 28 ;$1E ; High two bytes of first cluster
+              LDA #511
+              STA FAT32_Curent_Directory_entry_value + 30 ;$1E ; High two bytes of first cluster
+              ; write the data back
+              LDA FAT32_File_Entry_Ofset
+              JSL FAT32_Write_File_Entry
+
+FAT32_Open_Creat_Write_File__Write_next_cluster:
+              ; write the data to the newly alocated cluster
+              ; Get the cluster address
+              LDA FAT32_FAT_Entry_Save
+              STA FAT32_FAT_Entry
+              LDA FAT32_FAT_Entry_Save +2
+              STA FAT32_FAT_Entry + 2
+              ; comput the physycal address
+              JSL FAT32_COMPUT_PHISICAL_CLUSTER; (in : FAT32_FAT_Entry / Out : FAT32_FAT_Entry_Physical_Address)
+              ; Load the buffer address whare to copy the data from, and where on the disc
+              LDA FAT32_Data_Source_buffer +2 ; LDA #`FAT32_DATA_ADDRESS_BUFFER_512 ; load the byte nb 3 (bank byte)
+              PHA
+              LDA FAT32_Data_Source_buffer ; LDA #<>FAT32_DATA_ADDRESS_BUFFER_512 ; load the low world part of the buffer address
+              PHA
+              LDA FAT32_FAT_Entry_Physical_Address+2
+              TAX
+              LDA FAT32_FAT_Entry_Physical_Address
+              JSL IFAT_WRITE_SECTOR
+              PLX
+              PLX
+              CMP #1
+              BEQ  FAT32_Read_File___write_next_Sector
+              BRL FAT32_Open_Creat_Write_File__Fail_writing_data
+ FAT32_Read_File___write_next_Sector:
+              ; incrase the buffer addres by 512
+              LDA #$0200
+              STA ADDER_A
+              LDA #0
+              STA ADDER_A+2
+              LDA FAT32_Data_Source_buffer
+              STA ADDER_B
+              LDA FAT32_Data_Source_buffer +2
+              STA ADDER_B +2
+              LDA ADDER_R
+              STA FAT32_Data_Source_buffer
+              LDA ADDER_R +2
+              STA FAT32_Data_Source_buffer +2
+
+              ; incrase the data cursor addres by 512
+              LDA FAT32_Data_cursor
+              STA ADDER_B
+              LDA FAT32_Data_cursor +2
+              STA ADDER_B +2
+              LDA ADDER_R
+              STA FAT32_Data_cursor
+              LDA ADDER_R +2
+              STA FAT32_Data_cursor +2
+
+              CMP FAT32_Data_Size+2
+              BMI FAT32_Open_Creat_Write_File__END_WRITING
+              LDA FAT32_Data_cursor
+              CMP FAT32_Data_Size
+              BMI FAT32_Open_Creat_Write_File__END_WRITING
+              JSL FAT32_FIND_FREE_FAT_ENTRY
+              CMP #1
+              BNE FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster
+              ;-----------------------------------------------------------------
+              ; add the first sector to the newly created file
+              ;-----------------------------------------------------------------
+              ;save the free cluster found by FAT32_FIND_FREE_FAT_ENTRY
+              LDA FAT32_FAT_Next_Entry
+              STA FAT32_FAT_Entry_Save
+              LDA FAT32_FAT_Next_Entry +2
+              STA FAT32_FAT_Entry_Save +2
+              ;set the new sector as the last sector
+              LDA #$FFF8
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE
+              LDA #$FFFF
+              STA FAT32_FAT_ENTRY_VALUE_TO_WRITE +2
+              JSL FAT32_UPDATE_FAT_ENTRY
+              BRL FAT32_Open_Creat_Write_File__Write_next_cluster
+ FAT32_Open_Creat_Write_File__END_WRITING:
+ FAT32_Open_Creat_Write_File__Fail_writing_data:
+              fdffggd BRA fdffggd
+
+ FAT32_Open_Creat_Write_File__Cant_Find_Free_Cluster:
+              LDA #-1
+ FAT32_Open_Creat_Write_File__Cant_Open_File:
               RTL
 ;-------------------------------------------------------------------------------
 ;
@@ -204,15 +404,15 @@ FAT32_Open_Read_Display_File
               LDA #0
               STA FAT32_FAT_Entry+2
               JSL FAT32_IFAT_GET_FAT_ENTRY
-              LDA #$0D
-              JSL IPUTC
-              ;-------------------------
-              JSL FAT32_DIR_CMD
-              LDA #$0D
-              JSL IPUTC
-              ;LDX #$8000      ; 1.6s
-              ;JSL ILOOP_MS
-              ;-------------------------
+          LDA #$0D
+          JSL IPUTC
+          ;-------------------------
+          JSL FAT32_DIR_CMD
+          LDA #$0D
+          JSL IPUTC
+          ;LDX #$8000      ; 1.6s
+          ;JSL ILOOP_MS
+          ;-------------------------
               ;LDA #`file_to_load_fat_32 ; load the byte nb 3 (bank byte)
               ;PHA
               ;LDA #<>file_to_load_fat_32 ; load the low world part of the buffer address
@@ -426,8 +626,11 @@ FAT32_DIR_CMD
 ;
 ; return
 ; A
-; xxxx -> folder entry index sellected
-;-1 -> can't find any free folder entry
+; xxxx => folder entry index sellected
+; -1  =>  end of the file, no more sector
+; -2  =>  bad sector
+; -3  =>  reserved sector
+; -4  => can't find any free folder entry
 ;-------------------------------------------------------------------------------
 FAT32_Find_Free_Folder_Entry_From_Index
                   setaxl
@@ -454,6 +657,8 @@ FAT32_Find_Free_Folder_Entry
                   CPX #$FFFF ; make sure we are not searching for ever
                   BEQ FAT32_Find_Free_Folder_Entry__EXIT_TOO_MANY_FOLDER_ENTRY
                   JSL IFAT32_GET_DIRECTORY_ENTRY
+                  CMP #1
+                  BNE FAT32_Find_Free_Folder_Entry__EXIT
                   ;JSL FAT32_PRINT_Root_entry_value ;_HEX
                   JSL FAT32_GET_FOLDER_ENTRY_TYPE
                   CMP #$E5 ; deleted folder entry
@@ -467,7 +672,7 @@ FAT32_Find_Free_Folder_Entry
                   TXA
                   BRA FAT32_Find_Free_Folder_Entry__EXIT
  FAT32_Find_Free_Folder_Entry__EXIT_TOO_MANY_FOLDER_ENTRY:
-                  LDA #-1
+                  LDA #-4
  FAT32_Find_Free_Folder_Entry__EXIT:
   ;----- debug ------
   PHX
@@ -482,7 +687,7 @@ FAT32_Find_Free_Folder_Entry
                   RTL
 
 ;-------------------------------------------------------------------------------
-; write at the A location a enpty file ramplate woth the file name from
+; write at the A location an enpty file tamplate with the file name from
 ; file_to_write_fat_32
 ; In
 ; A :
@@ -494,22 +699,21 @@ FAT32_Find_Free_Folder_Entry
 ; return
 ; A
 ;-------------------------------------------------------------------------------
-
-FAT32_Write_File_Directory_entry
+FAT32_Write_Empty_File_Entry
                   setaxl
-;----- debug ------
-PHX
-PHA
-LDX #<>TEXT_____DEBUG_START_Write_File_Directory_entry
-LDA #`TEXT_____DEBUG_START_Write_File_Directory_entry
-JSL IPRINT_ABS
-PLA
-PLX
-;-----------------
+  ;----- debug ------
+  PHX
+  PHA
+  LDX #<>TEXT_____DEBUG_START_Write_File_Directory_entry
+  LDA #`TEXT_____DEBUG_START_Write_File_Directory_entry
+  JSL IPRINT_ABS
+  PLA
+  PLX
+  ;-----------------
                   PHA
         ;JSL FAT32_PRINT_Root_entry_value_HEX
                   ;-------------------------------------------------------------
-                  ; Weite the blank file directory tamplate
+                  ; Write the blank file directory tamplate
                   LDA #<>FAT32_File_Directory_entry_Template
                   TAX
                   LDA #<>FAT32_Curent_Directory_entry_value
@@ -529,9 +733,10 @@ PLX
         ;JSL FAT32_PRINT_Root_entry_value_HEX
         ;JSL FAT32_PRINT_Root_entry_value
         ;JSL FAT32_Print_Directory_Cluster_HEX
+FAT32_Write_File_Entry
                   ;-------------------------------------------------------------
                   ; comput the ofset in the curent directory sector loaded
-                  ; in ram to write the 31 back
+                  ; in ram to write the 32 Byte
                   LDA #<>FAT32_Curent_Directory_entry_value
                   TAX
                   PLA
@@ -557,15 +762,15 @@ PLX
                   TAX
                   LDA FAT32_Curent_Directory_Sector_loaded_in_ram
                   JSL IFAT_WRITE_SECTOR
-;----- debug ------
-PHX
-PHA
-LDX #<>TEXT_____DEBUG_END_Write_File_Directory_entry
-LDA #`TEXT_____DEBUG_END_Write_File_Directory_entry
-JSL IPRINT_ABS
-PLA
-PLX
-;-----------------
+  ;----- debug ------
+  PHX
+  PHA
+  LDX #<>TEXT_____DEBUG_END_Write_File_Directory_entry
+  LDA #`TEXT_____DEBUG_END_Write_File_Directory_entry
+  JSL IPRINT_ABS
+  PLA
+  PLX
+  ;-----------------
                   RTL
 ;-------------------------------------------------------------------------------
 ; Search for the file name in the root directory
@@ -595,8 +800,10 @@ FAT32_Open_File
  FAT32_Open_File_Read_Next_Folder_Entry:
                   TXA
                   CPX #$FFFF ; make sure we are not searching for ever
-                  BEQ FAT32_Open_File__EXIT_TOO_MANY_FOLDER_ENTRY
+                  BEQ FAT32_Open_File__EXIT_TOO_MANY_FOLDER_ENTRY_temp
                   JSL IFAT32_GET_DIRECTORY_ENTRY
+                  CMP #1
+                  BNE FAT32_Open_File__EXIT_temp
                   INC X
                   JSL FAT32_GET_FOLDER_ENTRY_TYPE
                   CMP #1
@@ -604,6 +811,8 @@ FAT32_Open_File
                   CMP #0
                   BEQ FAT32_Open_File__EXIT_END_OF_THE_ENTRY_LISTE
                   BRA FAT32_Open_File_Read_Next_Folder_Entry
+ FAT32_Open_File__EXIT_TOO_MANY_FOLDER_ENTRY_temp: BRL FAT32_Open_File__EXIT_TOO_MANY_FOLDER_ENTRY
+ FAT32_Open_File__EXIT_temp: BRL FAT32_Open_File__EXIT
  FAT32_Open_File__FIND_A_FILE_ENTRY:
                   ;-------------------------------------------------------------
                   ; compare the file name we want to load and the folder entry file name
@@ -628,13 +837,21 @@ FAT32_Open_File
                   ;-------------------------------------------------------------
                   ; We find the file name
  FAT32_Open_File__STRING_MATCHED:
-                  PLX
+                  PLA ; removing the ofset from the stack
+                  STA FAT32_File_Entry_Ofset
                   setaxl
                   JSL FAT32_PRINT_Root_entry_value_HEX ; Debug
+                  ; Update the first cluster location
                   LDA FAT32_Curent_Directory_entry_value + 26 ;$1S; Low two bytes of first cluster
                   STA FAT32_Start_Of_The_file_Cluster
                   LDA FAT32_Curent_Directory_entry_value + 20 ;$14 ; High two bytes of first cluster
                   STA FAT32_Start_Of_The_file_Cluster + 2
+                  ; Update the file size
+                  LDA FAT32_Curent_Directory_entry_value + 28 ;$1E ; High two bytes of the file size
+                  STA  FAT32_File_Size
+                  STA FAT32_Curent_Directory_entry_value + 30 ;$1E ; Low two bytes of the file size
+                  STA  FAT32_File_Size +2
+
                   LDA #0 ; FAT32_Curent_File_Cluster = 0 to indicat to the read code to read from the beginning
                   STA FAT32_Curent_File_Cluster
                   STA FAT32_Curent_File_Cluster + 2
@@ -644,7 +861,7 @@ FAT32_Open_File
                   LDA #0
                   BRA FAT32_Open_File__EXIT
  FAT32_Open_File__EXIT_TOO_MANY_FOLDER_ENTRY:
-                  LDA #-1
+                  LDA #-4
  FAT32_Open_File__EXIT:
   ;----- debug -----
   PHX
@@ -688,7 +905,7 @@ FAT32_Open_File
 ; Folder name to oppen : folder_name_1
 ; return
 ; A
-; 1 -> file open with success
+; 1 -> folder open with success
 ; 0 -> reach the end of the folder entry withut matching the folder name
 ;-1 -> went thrw to many folder entry (more than 65535) so exit
 ;
@@ -697,7 +914,6 @@ FAT32_Open_File
 FAT32_Open_Folder
                   setaxl
                   LDX #0 ; start by readding the first folder entry
-
  ;----- debug ------
  PHX
  PHA
@@ -713,6 +929,8 @@ FAT32_Open_Folder
                   CPX #$FFFF ; make sure we are not searching for ever
                   BEQ FAT32_Open_Folder__EXIT_TOO_MANY_FOLDER_ENTRY_1
                   JSL IFAT32_GET_DIRECTORY_ENTRY ; JSL IFAT32_GET_ROOT_DIRECTORY_ENTRY
+                  CMP #1
+                  BNE FAT32_Open_Folder__EXIT
                   INC X
                   JSL FAT32_GET_FOLDER_ENTRY_TYPE
   .comment
@@ -768,7 +986,8 @@ FAT32_Open_Folder
                   ;-------------------------------------------------------------
                   ; We find the file name
  FAT32_Open_Folder__STRING_MATCHED:
-                  PLX
+                  PLA ; removing the ofset from the stack
+                  STA FAT32_Folder_Entry_Ofset
                   setaxl
                   JSL FAT32_PRINT_Root_entry_value_HEX ; Debug
                   LDA FAT32_Curent_Directory_entry_value + 26 ;$1S; Low two bytes of first cluster
@@ -900,7 +1119,7 @@ FAT32_Read_File   ;  return value in A
  FAT32_Read_File___Reserved_Or_Bad_Sector:
                   BRL FAT32_Read_File___RETURN_ERROR
  FAT32_Read_File___Read_Sector:
-                  ; Update the vat sor the next round
+                  ; Update the FAT index for the next round
                   LDA FAT32_FAT_Next_Entry ;
                   STA FAT32_Curent_File_Cluster
                   LDA FAT32_FAT_Next_Entry+2
@@ -917,6 +1136,84 @@ FAT32_Read_File   ;  return value in A
   ;PLA
   ;PLX
   ;-----------------
+                  PLX
+                  RTL
+;
+;-------------------------------------------------------------------------------
+;
+; The file need to be opened before erasing as, oppening it setup all the address
+; For now it's only erasing the fat entry, not the data in the cluster
+; IN :
+; - FAT32_FAT_Entry FAT entry where to start the linked readding
+;
+; return value :
+;  1  =>  erase successful
+; -1  =>  bad fat entry
+;-------------------------------------------------------------------------------
+IFAT32_Erase_File
+                  PHX
+ IFAT32_ERASE_FILE___READ_NEXT_FAT:
+                  JSL FAT32_IFAT_GET_FAT_ENTRY
+                  ;-------------------------------------------------------------
+                  ; test the fat entry for reserved or bad sector
+                  JSL FAT32_Test_Fat_Entry_Validity_Next
+                  CMP #1
+                  BEQ IFAT32_ERASE_FILE___NEXT_VALID_CLUSTER
+                  CMP #-1
+                  BNE IFAT32_ERASE_FILE___EXIT
+                  JSL FAT32_CLEAR_FAT_ENTRY
+                  ;LDA #1
+                  ;BRL IFAT32_ERASE_FILE___EXIT
+                  BRL IFAT32_ERASE_FILE___ALL_LINKED_FAT_PARSED__UPDATE_FILE_ENTRY
+                  ;-------------------------------------------------------------
+
+                  ; the fat entry is containning data, now decrementing the
+                  ; linked counter  to see if we need to look at the next fat entry
+ IFAT32_ERASE_FILE___NEXT_VALID_CLUSTER:
+                  ; erase the curent fat entry value
+                  JSL FAT32_CLEAR_FAT_ENTRY
+                  ;;;JSL IFAT32_DEC_FAT_Linked_Entry
+                  ;;;LDA FAT32_FAT_Linked_Entry
+                  ;;;CMP #0
+                  ;;;BEQ IFAT32_ERASE_FILE___TEST_HIGH_PART
+                  ; update the next fat entry to read
+                  LDA FAT32_FAT_Next_Entry
+                  STA FAT32_FAT_Entry
+                  LDA FAT32_FAT_Next_Entry+2
+                  STA FAT32_FAT_Entry+2
+                  BRL IFAT32_ERASE_FILE___READ_NEXT_FAT
+ ;;;IFAT32_ERASE_FILE___TEST_HIGH_PART:
+                  ;;;LDA FAT32_FAT_Linked_Entry+2
+                  ;;;CMP #0
+                  ;;;BEQ IFAT32_ERASE_FILE___ALL_LINKED_FAT_PARSED
+                  ;;;LDA FAT32_FAT_Next_Entry
+                  ;;;STA FAT32_FAT_Entry
+                  ;;;LDA FAT32_FAT_Next_Entry+2
+                  ;;;STA FAT32_FAT_Entry+2
+                  ;;;BRL IFAT32_ERASE_FILE___READ_NEXT_FAT
+ IFAT32_ERASE_FILE___ALL_LINKED_FAT_PARSED__UPDATE_FILE_ENTRY:
+
+                  ;-------------------------------------------------------------
+                  ; Read the File entry
+                  LDA FAT32_File_Entry_Ofset
+                  JSL IFAT32_GET_DIRECTORY_ENTRY
+                  ; Cleas alocated cluster in the file entry
+                  LDA #0
+                  STA FAT32_Curent_Directory_entry_value + 26 ;$1A; Low two bytes of first cluster
+                  STA FAT32_Curent_Directory_entry_value + 20 ;$14 ; High two bytes of first cluster
+                  ;  Set the file size to 0 Byte
+                  LDA #0
+                  STA FAT32_Curent_Directory_entry_value + 28 ;$1E ; High two bytes of the file size
+                  STA FAT32_Curent_Directory_entry_value + 30 ;$1E ; Low two bytes of the file size
+                  ; Write the data back
+                  LDA FAT32_File_Entry_Ofset
+                  JSL FAT32_Write_File_Entry
+                  ;-------------------------------------------------------------#
+                  LDA #0
+                  STA FAT32_Start_Of_The_file_Cluster
+                  STA FAT32_Start_Of_The_file_Cluster +2
+                  LDA #1
+ IFAT32_ERASE_FILE___EXIT:
                   PLX
                   RTL
 ;-------------------------------------------------------------------------------
@@ -1318,7 +1615,7 @@ IFAT32_GET_LONG_NAME_STRING
 
 ;-------------------------------------------------------------------------------
 ;
-; ; REG A (16 bit) contain the (root/normal) directory entry to get the long
+; REG A (16 bit) contain the (root/normal) directory entry to get the long
 ; name for
 ;
 ;-------------------------------------------------------------------------------
@@ -1477,6 +1774,7 @@ IFAT32_GET_DIRECTORY_ENTRY_LONG_NAME
                   PLX ; get the PLA out of the way without modifiying the return value
                   PLX
                   RTL
+
 ;-------------------------------------------------------------------------------
 ;
 ; REG A (16 bit) contain the (root/normal) directory entry to read
@@ -1484,6 +1782,12 @@ IFAT32_GET_DIRECTORY_ENTRY_LONG_NAME
 ; 2 Entry possible for this function
 ; IFAT32_GET_ROOT_DIRECTORY_ENTRY
 ; IFAT32_GET_DIRECTORY_ENTRY
+;
+; return value :
+;
+; -1  =>  end of the file, no more sector
+; -2  =>  bad sector
+; -3  =>  reserved sector
 ;-------------------------------------------------------------------------------
 IFAT32_GET_ROOT_DIRECTORY_ENTRY
                   setaxl
@@ -1510,7 +1814,7 @@ IFAT32_GET_DIRECTORY_ENTRY
                   BNE IFAT32_GET_DIRECTORY_ENTRY__16_DIV
                   CMP #0
                   BEQ IFAT32_GET_ROOT_DIRECTORY_ENTRY__LOAD_CURENT_BASE_SECTOR ; the entry is in the first folder cluster
-                  ;-------------------------------------------------------------
+                  ;-------------- serarch for the entry location ---------------
                   ; the entry is bigger than 16, so we need to search for the entry cluster linked to the folder
                   STA FAT32_FAT_Linked_Entry ; store the number of sector from the base sector we need to read
                   LDA #0 ; entry index is 16 bit only so that limit at max 65535 entry per folder
@@ -1521,15 +1825,19 @@ IFAT32_GET_DIRECTORY_ENTRY
                   STA FAT32_FAT_Entry + 2
                   JSL IFAT32_READ_LINKED_FAT_ENTRY
                   ;-------------------- Test for fat validity ------------------
-                  LDA FAT32_FAT_Next_Entry
-                  CMP #0
-                  BMI IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_temp_1
-                  BRA IFAT32_GET_ROOT_DIRECTORY_ENTRY__LOAD_SECTOR ; the entry is not null so keep going
- IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_temp_1:
-                  LDA FAT32_FAT_Next_Entry+2
-                  CMP #0
-                  BMI IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED
-                  BRA IFAT32_GET_ROOT_DIRECTORY_ENTRY__LOAD_SECTOR ; the entry is not null so keep going
+                  ;;;LDA FAT32_FAT_Next_Entry
+                  ;;;CMP #0
+                  CMP #1 ; sector read is valid
+                  BEQ IFAT32_GET_ROOT_DIRECTORY_ENTRY__LOAD_SECTOR
+                  BRL IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_1
+                  ;;;BMI IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_temp_1
+                  ;;;BRA IFAT32_GET_ROOT_DIRECTORY_ENTRY__LOAD_SECTOR ; the entry is not null so keep going
+ ;;;IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_temp_1:
+                  ;;;LDA FAT32_FAT_Next_Entry+2
+                  ;;;CMP #0
+                  ;;;BMI IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED
+                  ;;;BRA IFAT32_GET_ROOT_DIRECTORY_ENTRY__LOAD_SECTOR ; the entry is not null so keep going
+ ;;;IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED: BRL IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_1
                   ;-------------------------------------------------------------
  IFAT32_GET_ROOT_DIRECTORY_ENTRY__LOAD_CURENT_BASE_SECTOR: ; set the cluster we want to read from the disc
                   LDA FAT32_Curent_Folder_start_cluster
@@ -1571,11 +1879,6 @@ IFAT32_GET_DIRECTORY_ENTRY
                   CMP FAT32_Curent_Directory_Sector_loaded_in_ram+2
                   BNE IFAT32_GET_ROOT_DIRECTORY_ENTRY__NEED_TO_LOAD_A_NEW_SECTOR
                   BEQ FAT32_FDD_SECTOR_ALREADDY_LOADDED_IN_RAM
-
- BRA IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_NEXT
- IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED: BRL IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_1
- IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_NEXT
-
  IFAT32_GET_ROOT_DIRECTORY_ENTRY__NEED_TO_LOAD_A_NEW_SECTOR:
                   LDA ADDER_R+2
                   STA FAT32_Curent_Directory_Sector_loaded_in_ram+2 ; save the new sector to load
@@ -1608,6 +1911,7 @@ IFAT32_GET_DIRECTORY_ENTRY
                   TAY
                   LDA #31
                   MVN `FAT32_FOLDER_ADDRESS_BUFFER_512, `FAT32_Curent_Directory_entry_value
+                  LDA #1
                   BRA IFAT32_GET_ROOT_DIRECTORY_ENTRY___EXIT_OK
  IFAT32_GET_ROOT_DIRECTORY_ENTRY__ERROR_RETURNED_1:
                   PLX
@@ -1616,8 +1920,8 @@ IFAT32_GET_DIRECTORY_ENTRY
                   RTL
 ;-------------------------------------------------------------------------------
 ;
-; Get in FAT32_FAT_Entry the FAT entry where to get the next One
-; return the next fat entry to read  in FAT32_FAT_Next_Entry
+; Get the content of the FAT entry index pointed by FAT32_FAT_Entry
+; in FAT32_FAT_Next_Entry
 ;
 ; JSL IFAT32_GET_ROOT_DIRECTORY_ENTRY
 ; LDA #5
@@ -1757,15 +2061,158 @@ FAT32_IFAT_GET_FAT_ENTRY
 
 ;-------------------------------------------------------------------------------
 ;
-; REG A (16 bit) contain the sector to read from the
+; Upate the content of the FAT entry index pointed by FAT32_FAT_Entry
+; with the value of FAT32_FAT_ENTRY_VALUE_TO_WRITE
+;
+;-------------------------------------------------------------------------------
+FAT32_Temp_UPDATE_FAT_32_bite               .dword 0
+FAT32_FAT_ENTRY_VALUE_TO_WRITE                       .dword 0
 
+FAT32_CLEAR_FAT_ENTRY
+                  PHA
+                  LDA #0
+                  STA FAT32_FAT_ENTRY_VALUE_TO_WRITE
+                  STA FAT32_FAT_ENTRY_VALUE_TO_WRITE+2
+                  PLA
+FAT32_UPDATE_FAT_ENTRY
+                  PHA
+                  PHX
+                  PHY
+                  ; find in witch sector the fat entry is suposed to be
+                  ;------- Test id the FAT entry is in the first cluster -------
+                  LDA FAT32_FAT_Entry+2
+                  CMP #0
+                  BNE FAT32_UPDATE_FAT_ENTRY__FIND_THE_CLUSTER_32_BYTE_NUMBER ; the FAT entry is definitly not in the first FAT cluster as MSB != 0
+                  STA FAT32_Temp_UPDATE_FAT_32_bite+2 ; the MSB of the sector will be for sure 0
+                  LDA FAT32_FAT_Entry
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A ; /128 (512/4)=> 128 entry per sector
+                  STA FAT32_Temp_UPDATE_FAT_32_bite
+                  CMP #0
+                  BNE FAT32_UPDATE_FAT_ENTRY__FIND_THE_CLUSTER_16_BYTE_NUMBER
+                  BRA FAT32_UPDATE_FAT_ENTRY__SECTOR_LOCATION_FIND ;  FAT entry is in  first FAT clustrer (entry smaller than 128)
+ FAT32_UPDATE_FAT_ENTRY__FIND_THE_CLUSTER_32_BYTE_NUMBER:
+                  ; ----- shift the 32 Byte FAT entry by 7 (divide by 128) ------
+                  ;-------- to comput the FAT cluster to load in memory --------
+                  LDA FAT32_FAT_Entry+2
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A ; /128 (512/4)=> 128 entry per sector
+                  STA FAT32_Temp_UPDATE_FAT_32_bite+2 ;
+                  LDA FAT32_FAT_Entry+2 ;extract the 7 bits of the HIGHT part of FAT32_FAT_Entry to casrry them in the LOW part
+                  AND #$007F
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A
+                  ASL A ; get the 4 bit in the right position to be added to the LOW part
+                  STA FAT32_Temp_UPDATE_FAT_32_bite
+ FAT32_UPDATE_FAT_ENTRY__FIND_THE_CLUSTER_16_BYTE_NUMBER:
+                  LDA FAT32_FAT_Entry
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A
+                  LSR A ; divide the high part of the FAT entry requested by 16  because there is 16 FAt entry per sector
+                  AND #$7FFF
+                  ORA FAT32_Temp_UPDATE_FAT_32_bite
+                  STA FAT32_Temp_UPDATE_FAT_32_bite ; Now contain the 32 bit FAT Cluster to load
+ FAT32_UPDATE_FAT_ENTRY__SECTOR_LOCATION_FIND:
+                  ;------ comput the real sector ofset ---------
+                  ; first operand
+                  LDA FAT32_Temp_UPDATE_FAT_32_bite ;
+                  STA ADDER_A
+                  LDA FAT32_Temp_UPDATE_FAT_32_bite+2
+                  STA ADDER_A+2
+                  ; second operand
+                  LDA FAT32_FAT_Base_Sector ; 32 byte number
+                  STA ADDER_B
+                  LDA FAT32_FAT_Base_Sector+2
+                  STA ADDER_B+2
+                  ;---------------------------------------
+                  ; test if the sector is alreaddy loaddes in RAM
+                  LDA ADDER_R
+                  CMP FAT32_FAT_Sector_loaded_in_ram
+                  BNE FAT32_UPDATE_FAT_ENTRY___NEED_TO_LOAD_A_NEW_SECTOR
+                  LDA ADDER_R+2
+                  CMP FAT32_Curent_Directory_Sector_loaded_in_ram+2
+                  BNE FAT32_UPDATE_FAT_ENTRY___NEED_TO_LOAD_A_NEW_SECTOR
+                  BEQ FAT32_UPDATE_FAT_ENTRY___SECTOR_ALREADDY_LOADDED_IN_RAM
+ FAT32_UPDATE_FAT_ENTRY___NEED_TO_LOAD_A_NEW_SECTOR:
+                  LDA ADDER_R+2
+                  STA FAT32_FAT_Sector_loaded_in_ram+2 ; save the new sector to load
+                  LDA ADDER_R
+                  STA FAT32_FAT_Sector_loaded_in_ram
+                  LDA #`FAT32_FAT_ADDRESS_BUFFER_512 ; load the byte nb 3 (bank byte)
+                  PHA
+                  LDA #<>FAT32_FAT_ADDRESS_BUFFER_512 ; load the low world part of the buffer address
+                  PHA
+                  LDA FAT32_FAT_Sector_loaded_in_ram+2 ; read the ROOT directory sector saved at the begining of the function
+                  TAX
+                  LDA FAT32_FAT_Sector_loaded_in_ram
+                  JSL IFAT_READ_SECTOR
+                  PLX
+                  PLX
+                  ; from here the right FAT sector is loades in ram
+ FAT32_UPDATE_FAT_ENTRY___SECTOR_ALREADDY_LOADDED_IN_RAM:
+                  LDA FAT32_FAT_Entry
+                  AND #$007F ; get only the 7 first byte to get the ofset in the curent FAT cluster loades
+                  ASL
+                  ASL ; *4 to point to the FAT entry 32 byte
+                  CLC
+                  ADC #<>FAT32_FAT_ADDRESS_BUFFER_512 ; Add the ofset FAT entry to the data bufer wgere the FAT data is loaded
+                  ; Update the FAT sector in ram with the new fat index
+                  TAY
+                  LDA #<>FAT32_FAT_ENTRY_VALUE_TO_WRITE
+                  TAX
+                  LDA #3 ; writ 4 Byte in the buffer
+                  MVN `FAT32_FAT_ENTRY_VALUE_TO_WRITE,`FAT32_FAT_ADDRESS_BUFFER_512
+                  ; Write the FAT sector back
+                  LDA #`FAT32_FAT_ADDRESS_BUFFER_512 ; load the byte nb 3 (bank byte)
+                  PHA
+                  LDA #<>FAT32_FAT_ADDRESS_BUFFER_512 ; load the low world part of the buffer address
+                  PHA
+                  LDA FAT32_FAT_Sector_loaded_in_ram
+                  LDX FAT32_FAT_Sector_loaded_in_ram+2
+                  JSL IFAT_WRITE_SECTOR
+                  PLY
+                  PLX
+                  PLA
+                  RTL
+
+;-------------------------------------------------------------------------------
+;
+; IN :
+; - FAT32_FAT_Linked_Entry number of entry to "jump to" before getting the right sector location
+; - FAT32_FAT_Entry FAT entry where to start the linked readding
+;
 ; return value :
-;  1  => sector found
+;  1  =>  sector found
 ; -1  =>  end of the file, no more sector
 ; -2  =>  bad sector
 ; -3  =>  reserved sector
 ;-------------------------------------------------------------------------------
-
 IFAT32_READ_LINKED_FAT_ENTRY
                   PHX
  IFAT32_READ_LINKED_FAT_ENTRY___READ_NEXT_FAT:
@@ -2284,3 +2731,5 @@ ISD_WRITE       ;PHP
 
 * = $120000
 .include "HDD_row_TEXT_HEX.asm" ; fake HDD data
+
+Starwars_text   .text "Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....Episode IV A NEW HOPE It is a period of civil war. Rebel spaceships, striking from a hidden base, have won their first victory against the evil Galactic Empire.  During the battle, Rebel spies managed to steal secret plans to the Empire's ultimate weapon, the DEATH STAR, an armored space station with enough power to destroy an entire planet.  Pursued by the Empire's sinister agents, Princess Leia races home aboard her starship, custodian of the stolen plans that can save her people and restore freedom to the galaxy.....  	 Episode V THE EMPIRE STRIKES BACK  It is a dark time for the Rebellion. Although the Death Star has been destroyed, Imperial troops have driven the Rebel forces from their hidden base and pursued them across the galaxy.  Evading the dreaded Imperial Starfleet, a group of freedom fighters led by Luke Skywalker has established a new secret base on the remote ice world of Hoth.  The evil lord Darth Vader, obsessed with finding young Skywalker, has dispatched thousands of remote probes into the far reaches of space....  	 Episode VI RETURN OF THE JEDI  Luke Skywalker has returned to his home planet of Tatooine in an attempt to rescue his friend Han Solo from the clutches of the vile gangster Jabba the Hutt.  Little does Luke know that the GALACTIC EMPIRE has secretly begun construction on a new armored space station even more powerful than the first dreaded Death Star.  When completed, this ultimate weapon will spell certain doom for the small band of rebels struggling to restore freedom to the galaxy....  Episode VII THE FORCE AWAKENS  Luke Skywalker has vanished. In his absence, the sinister FIRST ORDER has risen from the ashes of the Empire and will not rest until Skywalker, the last Jedi, has been destroyed.  With the support of the REPUBLIC, General Leia Organa leads a brave RESISTANCE. She is desperate to find her brother Luke and gain his help in restoring peace and justice to the galaxy.  Leia has sent her most daring pilot on a secret mission to Jakku, where an old ally has discovered a clue to Luke's whereabouts....  	 Episode VIII THE LAST JEDI  The FIRST ORDER reigns. Having decimated the peaceful Republic, Supreme Leader Snoke now deploys the merciless legions to seize military control of the galaxy.  Only General Leia Organa's band of RESISTANCE fighters stand against the rising tyranny, certain that Jedi Master Luke Skywalker will return and restore a spark of hope to the fight.  But the Resistance has been exposed. As the First Order speeds toward the rebel base, the brave heroes mount a desperate escape....  	 Episode IX THE RISE OF SKYWALKER  The dead speak! The galaxy has heard a mysterious broadcast, a threat of REVENGE in the sinister voice of the late EMPEROR PALPATINE.  GENERAL LEIA ORGANA dispatches secret agents to gather intelligence, while REY, the last hope of the Jedi, trains for battle against the diabolical FIRST ORDER.  Meanwhile, Supreme Leader KYLO REN rages in search of the phantom Emperor, determined to destroy any threat to his power....",0
